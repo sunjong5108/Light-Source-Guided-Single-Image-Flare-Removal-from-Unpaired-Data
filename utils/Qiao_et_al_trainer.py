@@ -1,25 +1,17 @@
-from itertools import cycle
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import os
 import torchvision
 import numpy as np
-from customdataset.get_load_dataset import *
 import time
 from tqdm import tqdm
-from losses.losses import *
-from models.Qiao_et_al import *
-from models.flare_detect_cam import *
 from ignite.engine import *
 from ignite.handlers import *
 from ignite.metrics import *
 from ignite.utils import *
 from ignite.contrib.metrics.regression import *
 from ignite.contrib.metrics import *
-from utils.inception import *
-from utils.metrics import *
-from utils.LearningScheduler import *
 import pandas as pd
 
 class F_Trainier(nn.Module):
@@ -42,8 +34,8 @@ class F_Trainier(nn.Module):
         if fold == 'fold1':
             FD = LSD_FD_model(3, 1)
             LSD = LSD_FD_model(3, 1)
-            FG = FR_FG_model(4, 3)
-            FR = FR_FG_model(4, 3)
+            FG = FR_FG_model(9, 4, 3)
+            FR = FR_FG_model(9, 4, 3)
             checkpoint = torch.load(os.path.join('/workspace/DB1_proposed_model_fd_fold1_weights', 'model_168.pth'))#Best loss index: 168 Best loss:  8.011459194676718e-05
             FD.load_state_dict(checkpoint['model_state_dict'])
             LSD.load_state_dict(checkpoint['model_state_dict'])
@@ -53,8 +45,8 @@ class F_Trainier(nn.Module):
         elif fold == 'fold2':
             FD = LSD_FD_model(3, 1)
             LSD = LSD_FD_model(3, 1)
-            FG = FR_FG_model(4, 3)
-            FR = FR_FG_model(4, 3)
+            FG = FR_FG_model(9, 4, 3)
+            FR = FR_FG_model(9, 4, 3)
             checkpoint = torch.load(os.path.join('/workspace/DB1_proposed_model_fd_fold2_weights', 'model_191.pth'))#Best loss index: 191 Best loss:  0.0003442429820714616
             FD.load_state_dict(checkpoint['model_state_dict'])
             LSD.load_state_dict(checkpoint['model_state_dict'])
@@ -64,8 +56,8 @@ class F_Trainier(nn.Module):
         elif fold == 'default':
             FD = LSD_FD_model(3, 1)
             LSD = LSD_FD_model(3, 1)
-            FG = FR_FG_model(4, 3)
-            FR = FR_FG_model(4, 3)
+            FG = FR_FG_model(9, 4, 3)
+            FR = FR_FG_model(9, 4, 3)
         
         discriminator = PatchGANDiscriminator(3)
 
@@ -147,9 +139,9 @@ class F_Trainier(nn.Module):
             
             Mf_ls = self.LSD(input) # flare image light source mask
             Mf_f = self.FD(input) # flare image flare region mask
-            fr_output = self.FR(torch.cat(input, Mf_f)) 
+            fr_output = self.FR(torch.cat((input, Mf_f), dim=1)) 
             Ms_hat_ls = self.LSD(fr_output) # flare removal image light source mask
-            fg_output = self.FG(torch.cat(fr_output, Mf_ls))
+            fg_output = self.FG(torch.cat((fr_output, Mf_ls), dim=1))
             Mf_hat_f = self.FD(fg_output) # flare generation image flare region mask
 
             # Discriminator
@@ -249,14 +241,12 @@ class F_Trainier(nn.Module):
 
                 Mf_ls = self.LSD(val_input) # flare image light source mask
                 Mf_f = self.FD(val_input) # flare image flare region mask
-                fr_output = self.FR(torch.cat(val_input, Mf_f)) 
+                fr_output = self.FR(torch.cat((val_input, Mf_f), dim=1)) 
                 Ms_hat_ls = self.LSD(fr_output) # flare removal image light source mask
-                fg_output = self.FG(torch.cat(fr_output, Mf_ls))
+                fg_output = self.FG(torch.cat((fr_output, Mf_ls), dim=1))
                 Mf_hat_f = self.FD(fg_output) # flare generation image flare region mask
  
                 # Discriminator
-                self.dis_optimizer.zero_grad()
-
                 dis_real = self.dis_model(val_clean)
                 dis_fake = self.dis_model(fr_output.detach())
 
@@ -265,14 +255,9 @@ class F_Trainier(nn.Module):
 
                 dis_loss = dis_real_loss + dis_fake_loss
 
-                dis_loss.backward()
-                self.dis_optimizer.step()
-
                 epoch_val_dis_loss += dis_loss.item()
 
                 # Generator
-                self.gen_optimizer.zero_grad()
-
                 gen_fake = self.dis_model(fr_output)
                 gen_gan_loss = self.l2_loss(gen_fake, torch.ones_like(gen_fake))
 
@@ -281,27 +266,19 @@ class F_Trainier(nn.Module):
 
                 cycle_loss = self.l1_loss(val_input, fg_output) + self.perceptual(val_input, fg_output)
 
-                gen_loss = ls_loss + gen_gan_loss + f_loss + cycle_loss
-
-                gen_loss.backward()
-                self.gen_optimizer.step()
-
-                epoch_val_gen_loss += gen_loss.item()
-
-                metric_state = val_default_evaluator.run([[fr_output, val_clean]])
-
-                epoch_val_psnr += metric_state.metrics['psnr']
-                epoch_val_ssim += metric_state.metrics['ssim']
-                val_fid = calculate_fretchet(fr_output, val_clean, self.incepv3)
                 epoch_val_fid += val_fid
             
-            # self.gen_lr_scheduler.step()
-            # self.dis_lr_scheduler.step()
-            
+            torchvision.utils.save_image(torch.cat([val_input, fr_output, val_clean]), os.path.join(self.save_val_results_path, 'results_' + str(epoch) + '.png'))
             print('Epoch: {}\tTime: {:.4f}\tGen Loss: {:.4f}\tDis Loss: {:.4f}\tPSNR: {:.4f}\tSSIM: {:.4f}\tFID: {:.8f}'.format(
                     epoch, time.time() - val_epoch_start_time, epoch_val_gen_loss / len(val_loader), epoch_val_dis_loss / len(val_loader), 
                     epoch_val_psnr / len(val_loader), epoch_val_ssim / len(val_loader), epoch_val_fid / len(val_loader)
                     ))#self.gen_lr_scheduler.get_last_lr()[0], self.dis_lr_scheduler.get_last_lr()[0]))
+
+            self.Validation_history['gen_loss'].append(epoch_val_gen_loss / len(val_loader))
+            self.Validation_history['dis_loss'].append(epoch_val_dis_loss / len(val_loader))
+            self.Validation_history['psnr'].append(epoch_val_psnr / len(val_loader))
+            self.Validation_history['ssim'].append(epoch_val_ssim / len(val_loader))
+            self.Validation_history['fid'].append(epoch_val_fid / len(val_loader))
 
         return epoch_val_dis_loss, epoch_val_gen_loss, epoch_val_psnr, epoch_val_ssim
 
@@ -315,8 +292,8 @@ class FF_Trainier(nn.Module):
 
         FD = LSD_FD_model(3, 1)
         LSD = LSD_FD_model(3, 1)
-        FG = FR_FG_model(4, 3)
-        FR = FR_FG_model(4, 3)
+        FG = FR_FG_model(9, 4, 3)
+        FR = FR_FG_model(9, 4, 3)
         discriminator = PatchGANDiscriminator(3)
 
         self.FD = FD.to(device)
@@ -396,9 +373,9 @@ class FF_Trainier(nn.Module):
             clean = data[1].to(self.device)
             
             Mff_ls = self.LSD(clean) # flare free image light source mask
-            fg_output = self.FG(torch.cat(clean, Mff_ls))
+            fg_output = self.FG(torch.cat((clean, Mff_ls), dim=1))
             Mf_hat_f = self.FD(fg_output) # flare generation image flare region mask
-            fr_output = self.FR(torch.cat(fg_output, Mf_hat_f))
+            fr_output = self.FR(torch.cat((fg_output, Mf_hat_f), dim=1))
             Mf_hat_ls = self.LSD(fr_output) # flare removal image light source mask
   
 
@@ -437,7 +414,7 @@ class FF_Trainier(nn.Module):
 
             epoch_gen_loss += gen_loss.item()
 
-            metric_state = default_evaluator.run([[fr_output, clean]])
+            metric_state = default_evaluator.run([[fg_output, input]])
 
             epoch_psnr += metric_state.metrics['psnr']
             epoch_ssim += metric_state.metrics['ssim']
@@ -497,14 +474,12 @@ class FF_Trainier(nn.Module):
                 val_clean = data[1].to(self.device)
 
                 Mff_ls = self.LSD(val_clean) # flare free image light source mask
-                fg_output = self.FG(torch.cat(val_clean, Mff_ls))
+                fg_output = self.FG(torch.cat((val_clean, Mff_ls), dim=1))
                 Mf_hat_f = self.FD(fg_output) # flare generation image flare region mask
-                fr_output = self.FR(torch.cat(fg_output, Mf_hat_f))
+                fr_output = self.FR(torch.cat((fg_output, Mf_hat_f), dim=1))
                 Mf_hat_ls = self.LSD(fr_output) # flare removal image light source mask
 
                 # Discriminator
-                self.dis_optimizer.zero_grad()
-
                 dis_real = self.dis_model(val_input)
                 dis_fake = self.dis_model(fg_output.detach())
 
@@ -513,14 +488,9 @@ class FF_Trainier(nn.Module):
 
                 dis_loss = dis_real_loss + dis_fake_loss
 
-                dis_loss.backward()
-                self.dis_optimizer.step()
-
                 epoch_val_dis_loss += dis_loss.item()
 
                 # Generator
-                self.gen_optimizer.zero_grad()
-
                 gen_fake = self.dis_model(fg_output)
                 gen_gan_loss = self.l2_loss(gen_fake, torch.ones_like(gen_fake))
 
@@ -530,24 +500,24 @@ class FF_Trainier(nn.Module):
 
                 gen_loss = ls_loss + gen_gan_loss + cycle_loss
 
-                gen_loss.backward()
-                self.gen_optimizer.step()
-
                 epoch_val_gen_loss += gen_loss.item()
 
-                metric_state = val_default_evaluator.run([[fr_output, val_clean]])
+                metric_state = val_default_evaluator.run([[fg_output, val_input]])
 
                 epoch_val_psnr += metric_state.metrics['psnr']
                 epoch_val_ssim += metric_state.metrics['ssim']
-                val_fid = calculate_fretchet(fr_output, val_clean, self.incepv3)
+                val_fid = calculate_fretchet(fg_output, val_input, self.incepv3)
                 epoch_val_fid += val_fid
             
-            # self.gen_lr_scheduler.step()
-            # self.dis_lr_scheduler.step()
-            
+            torchvision.utils.save_image(torch.cat([val_clean, fg_output, val_input]), os.path.join(self.save_val_results_path, 'results_' + str(epoch) + '.png'))
             print('Epoch: {}\tTime: {:.4f}\tGen Loss: {:.4f}\tDis Loss: {:.4f}\tPSNR: {:.4f}\tSSIM: {:.4f}\tFID: {:.8f}'.format(
                     epoch, time.time() - val_epoch_start_time, epoch_val_gen_loss / len(val_loader), epoch_val_dis_loss / len(val_loader), 
                     epoch_val_psnr / len(val_loader), epoch_val_ssim / len(val_loader), epoch_val_fid / len(val_loader)
                     ))#self.gen_lr_scheduler.get_last_lr()[0], self.dis_lr_scheduler.get_last_lr()[0]))
+            self.Validation_history['gen_loss'].append(epoch_val_gen_loss / len(val_loader))
+            self.Validation_history['dis_loss'].append(epoch_val_dis_loss / len(val_loader))
+            self.Validation_history['psnr'].append(epoch_val_psnr / len(val_loader))
+            self.Validation_history['ssim'].append(epoch_val_ssim / len(val_loader))
+            self.Validation_history['fid'].append(epoch_val_fid / len(val_loader))
 
         return epoch_val_dis_loss, epoch_val_gen_loss, epoch_val_psnr, epoch_val_ssim
