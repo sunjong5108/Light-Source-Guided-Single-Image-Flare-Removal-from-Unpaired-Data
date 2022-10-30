@@ -105,10 +105,10 @@ class FR_FG_model(nn.Module):
 
     self.decoder = nn.Sequential(
         nn.ConvTranspose2d(4*h_f, 2*h_f, kernel_size=4, stride=2, padding=1),
-        nn.InstanceNorm2d(h_f),
+        nn.InstanceNorm2d(2*h_f),
         nn.ReLU(),
         nn.ConvTranspose2d(2*h_f, h_f, kernel_size=4, stride=2, padding=1),
-        nn.InstanceNorm2d(2*h_f),
+        nn.InstanceNorm2d(h_f),
         nn.ReLU(),
         nn.Conv2d(h_f, out_ch, kernel_size=7, stride=1, padding=3, padding_mode='reflect'),
     )
